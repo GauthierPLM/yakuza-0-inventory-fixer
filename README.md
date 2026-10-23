@@ -37,6 +37,13 @@ script does the same replacement but has not itself been tried in game. We haven
 replacing saves while the game is closed, where Steam Cloud might sync an older copy over
 them, so disable Steam Cloud for the game if you do that.
 
+### Converting to Director's Cut
+
+If you plan to convert a Yakuza 0 save to Director's Cut (for example with
+[this converter](https://github.com/kamikazziee/Yakuza0-DirectorsCutSaveConverter)), **fix the
+Yakuza 0 save first, then convert it**. The conversion copies the stuck parts along with
+everything else, but a save that was fixed before conversion converts cleanly.
+
 ## Command line options
 
 ```
@@ -114,10 +121,11 @@ item range, rather than guessing at an unknown layout.
 
 - Tested on one Yakuza 0 Steam save (`Yakuza0.exe` SHA-256 `b3c6c144...`). Removing the stuck
   parts from the weapon inventory and from the weapon box was confirmed in game.
-- Saves converted from Yakuza 0 to Director's Cut carry the stuck parts over, so Director's
-  Cut saves can be affected too. The script's Director's Cut support follows the layout used by
-  the converter above and has only been tested on files built the same way, not on a real
-  Director's Cut save.
+- A corrupted Yakuza 0 save keeps its stuck parts when it is converted to Director's Cut.
+  Converting a save that was fixed first gives a clean Director's Cut save (confirmed). The
+  script's own Director's Cut support, for cleaning a save that is already converted, follows
+  the layout used by the converter above and has only been tested on files built the same way,
+  not on a real Director's Cut save.
 - Keep your own backup of the save folder too. Use at your own risk.
 
 ## License
