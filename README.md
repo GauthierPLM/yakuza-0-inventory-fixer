@@ -122,10 +122,9 @@ item range, rather than guessing at an unknown layout.
 - Tested on one Yakuza 0 Steam save (`Yakuza0.exe` SHA-256 `b3c6c144...`). Removing the stuck
   parts from the weapon inventory and from the weapon box was confirmed in game.
 - A corrupted Yakuza 0 save keeps its stuck parts when it is converted to Director's Cut.
-  Converting a save that was fixed first gives a clean Director's Cut save (confirmed). The
-  script's own Director's Cut support, for cleaning a save that is already converted, follows
-  the layout used by the converter above and has only been tested on files built the same way,
-  not on a real Director's Cut save.
+  Converting a save that was fixed first gives a clean Director's Cut save (confirmed).
+- The script also cleans saves that are already in Director's Cut format (confirmed on real
+  Director's Cut saves). It follows the layout used by the converter above.
 - Keep your own backup of the save folder too. Use at your own risk.
 
 ## License
