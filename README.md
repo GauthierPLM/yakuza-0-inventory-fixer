@@ -113,12 +113,11 @@ item range, rather than guessing at an unknown layout.
 ## Caveats
 
 - Tested on one Yakuza 0 Steam save (`Yakuza0.exe` SHA-256 `b3c6c144...`). Removing the stuck
-  parts from the weapon inventory was confirmed in game. In that save there were also 8 stuck
-  parts in Kiryu's weapon box, which the script removes but which have not been tested in
-  game yet.
-- Director's Cut support has **not been tested on a real Director's Cut save**. It follows the
-  layout used by the converter above and was only tested on files built the same way (the
-  Director's Cut game doesn't have this bug, but converted saves may carry it over).
+  parts from the weapon inventory and from the weapon box was confirmed in game.
+- Saves converted from Yakuza 0 to Director's Cut carry the stuck parts over, so Director's
+  Cut saves can be affected too. The script's Director's Cut support follows the layout used by
+  the converter above and has only been tested on files built the same way, not on a real
+  Director's Cut save.
 - Keep your own backup of the save folder too. Use at your own risk.
 
 ## License
