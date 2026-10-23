@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
-"""Remove stuck Pocket Circuit parts from a Yakuza 0 (PC/Steam) save file.
+"""Remove stuck Pocket Circuit parts from Yakuza 0 (PC/Steam) save files.
 
 Some saves end up with Pocket Circuit car parts (tires, motors) occupying slots in
 Equipment > Weapon and in the weapon box. They can't be discarded in game. This script
 zeroes those records in the save file, which is what the game itself does when you
 discard an item. Your real Pocket Circuit part list is not touched.
 
-By default the original file is left untouched and a fixed copy is written next to it.
-
 Usage:
-    python3 y0_fix_stuck_parts.py SaveData0002.sav              # writes SaveData0002.fixed.sav
-    python3 y0_fix_stuck_parts.py SaveData0002.sav --dry-run    # only report what would change
-    python3 y0_fix_stuck_parts.py SaveData0002.sav --in-place   # overwrite, keeping a .bak copy
+    # Fix every save in a folder, in place. Each file that needs fixing is backed up first,
+    # into a new folder next to the save folder (e.g. remote_backup_20261023-231500).
+    python3 y0_fix_stuck_parts.py ~/.local/share/Steam/userdata/<id>/638970/remote
+
+    # Same, but only report what would change (nothing is written, no backup is made)
+    python3 y0_fix_stuck_parts.py <save folder> --dry-run
+
+    # Fix a single file: writes SaveData0002.fixed.sav and leaves the original alone
+    python3 y0_fix_stuck_parts.py SaveData0002.sav
+    python3 y0_fix_stuck_parts.py SaveData0002.sav --in-place   # overwrite, keeping a .bak
 
 Save location with Steam:
     <Steam>/userdata/<steam id>/638970/remote/SaveData000N.sav
-Turn off Steam Cloud for the game and back up that folder before replacing a save.
+
+Credits: Yakuza 0 is (c) SEGA. The item IDs below come from the game's own item list
+(item.uni in media/data/bootpar/boot.par). This project is not affiliated with SEGA or
+RGG Studio. For the full item list (names, types, limits) and the save layout, see
+https://github.com/apocalyptech/y0-cli-save (y0/itemregistry.py, y0/savegame.py).
 """
 
 import argparse
+import datetime
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -50,8 +61,10 @@ INVENTORIES = [
     ("Majima crafting materials", 0xD22C, 96),
 ]
 
-# Every Pocket Circuit item in the game (item.uni in boot.par: all names "pokecir_*").
-# None of them belong in a weapon slot.
+# Every Pocket Circuit item in Yakuza 0 (c) SEGA: item IDs and internal names from the game's
+# item list (item.uni in boot.par, all names "pokecir_*"). For the complete item list see
+# https://github.com/apocalyptech/y0-cli-save/blob/main/y0/itemregistry.py
+# None of these belong anywhere except Kiryu's own Pocket Circuit list.
 PARTS = {
     0x23c: "r_motor", 0x23d: "t_motor", 0x23e: "motor_m",
     0x23f: "motor_ht", 0x240: "motor0", 0x241: "wheel0",
@@ -103,6 +116,9 @@ PARTS = {
 }
 
 
+SAVE_PATTERNS = ("SaveData*.sav", "SaveData*.clr")
+
+
 def find_stuck(data, ids):
     found = []
     for label, base, count in INVENTORIES:
@@ -114,50 +130,143 @@ def find_stuck(data, ids):
     return found
 
 
+def load_save(path):
+    """Return the save's bytes, or None (with a message) if it isn't a Yakuza 0 save."""
+    data = bytearray(path.read_bytes())
+    if data[:4] != MAGIC or len(data) != SAVE_SIZE:
+        print(f"{path}: not a Yakuza 0 save "
+              f"(expected magic {MAGIC!r} and {SAVE_SIZE} bytes, got {bytes(data[:4])!r} and {len(data)} bytes)")
+        return None
+    return data
+
+
+def scan(path, data, ids):
+    found = find_stuck(data, ids)
+    if not found:
+        print(f"{path}: no stuck Pocket Circuit parts found")
+        return found
+    print(f"{path}: found {len(found)} stuck record(s)")
+    for label, index, offset, item_id in found:
+        print(f"  {label}, slot {index + 1:3d} at {offset:#x}: pokecir_{ids[item_id]} (id {item_id:#x})")
+    return found
+
+
+def clear_records(data, found):
+    for _, _, offset, _ in found:
+        data[offset:offset + RECORD_SIZE] = bytes(RECORD_SIZE)
+
+
+def write_in_place(path, data):
+    """Replace the file atomically so a crash can't leave a half-written save."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def default_backup_dir(folder):
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder = folder.resolve()
+    return folder.parent / f"{folder.name}_backup_{stamp}"
+
+
+def fix_folder(folder, ids, dry_run, backup_dir):
+    paths = sorted({p for pattern in SAVE_PATTERNS for p in folder.glob(pattern) if p.is_file()})
+    if not paths:
+        sys.exit(f"No SaveData*.sav / SaveData*.clr files found in {folder}")
+
+    todo = []
+    for path in paths:
+        data = load_save(path)
+        if data is None:
+            continue
+        found = scan(path, data, ids)
+        if found:
+            todo.append((path, data, found))
+
+    if not todo:
+        print("Nothing to fix.")
+        return
+    if dry_run:
+        print(f"Dry run: {len(todo)} file(s) would be fixed. Nothing was written.")
+        return
+
+    # Back everything up before touching any save.
+    backup_dir = backup_dir or default_backup_dir(folder)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    for path, _, _ in todo:
+        target = backup_dir / path.name
+        if target.exists():
+            sys.exit(f"Refusing to overwrite existing backup {target}. Nothing was changed.")
+        shutil.copy2(path, target)
+        if target.read_bytes() != path.read_bytes():
+            sys.exit(f"Backup of {path} could not be verified. Nothing was changed.")
+    print(f"Backed up {len(todo)} file(s) to {backup_dir}")
+
+    for path, data, found in todo:
+        clear_records(data, found)
+        write_in_place(path, data)
+        print(f"Fixed {path} ({len(found)} record(s) removed)")
+
+
+def fix_file(path, ids, dry_run, in_place, output):
+    data = load_save(path)
+    if data is None:
+        sys.exit(1)
+    found = scan(path, data, ids)
+    if not found or dry_run:
+        return
+    clear_records(data, found)
+    if in_place:
+        backup = path.with_suffix(path.suffix + ".bak")
+        if backup.exists():
+            sys.exit(f"Refusing to overwrite existing backup {backup}. Nothing was changed.")
+        shutil.copy2(path, backup)
+        print(f"Backup written to {backup}")
+        write_in_place(path, data)
+        print(f"Fixed save written to {path}")
+    else:
+        out = output or path.with_suffix(".fixed.sav")
+        out.write_bytes(data)
+        print(f"Fixed save written to {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("save", type=Path, help="path to a SaveData000N.sav file")
-    parser.add_argument("-o", "--output", type=Path, help="where to write the fixed save")
-    parser.add_argument("--in-place", action="store_true",
-                        help="overwrite the input file (a .bak copy is kept)")
+    parser.add_argument("path", type=Path,
+                        help="a save folder (fixes every save in it, in place, with backups) "
+                             "or a single SaveData000N.sav file")
     parser.add_argument("--dry-run", action="store_true", help="report only, write nothing")
+    parser.add_argument("--backup-dir", type=Path,
+                        help="folder mode: where to put the backups "
+                             "(default: <save folder>_backup_<timestamp> next to the save folder)")
+    parser.add_argument("--in-place", action="store_true",
+                        help="single file mode: overwrite the file (a .bak copy is kept)")
+    parser.add_argument("-o", "--output", type=Path,
+                        help="single file mode: where to write the fixed save")
     parser.add_argument("--extra-id", type=lambda s: int(s, 0), action="append", default=[],
                         metavar="ID", help="also remove records with this item ID (e.g. 0x265)")
     args = parser.parse_args()
-
-    data = bytearray(args.save.read_bytes())
-    if data[:4] != MAGIC or len(data) != SAVE_SIZE:
-        sys.exit(f"{args.save} does not look like a Yakuza 0 save "
-                 f"(expected magic {MAGIC!r} and {SAVE_SIZE} bytes, got {bytes(data[:4])!r} and {len(data)} bytes)")
 
     ids = dict(PARTS)
     for extra in args.extra_id:
         ids.setdefault(extra, f"item_{extra:#x}")
 
-    found = find_stuck(data, ids)
-    if not found:
-        print("No stuck Pocket Circuit parts found. Nothing to do.")
-        return
-
-    print(f"Found {len(found)} stuck record(s):")
-    for label, index, offset, item_id in found:
-        print(f"  {label}, slot {index + 1:3d} at {offset:#x}: pokecir_{ids[item_id]} (id {item_id:#x})")
-
-    if args.dry_run:
-        return
-
-    for _, _, offset, _ in found:
-        data[offset:offset + RECORD_SIZE] = bytes(RECORD_SIZE)
-
-    if args.in_place:
-        backup = args.save.with_suffix(args.save.suffix + ".bak")
-        shutil.copy2(args.save, backup)
-        out = args.save
-        print(f"Backup written to {backup}")
+    if args.path.is_dir():
+        if args.in_place or args.output:
+            parser.error("--in-place and --output are for single files; "
+                         "folders are always fixed in place, with a backup first")
+        fix_folder(args.path, ids, args.dry_run, args.backup_dir)
+    elif args.path.is_file():
+        if args.backup_dir:
+            parser.error("--backup-dir is only for folders")
+        fix_file(args.path, ids, args.dry_run, args.in_place, args.output)
     else:
-        out = args.output or args.save.with_suffix(".fixed.sav")
-    out.write_bytes(data)
-    print(f"Fixed save written to {out}")
+        sys.exit(f"{args.path} does not exist")
 
 
 if __name__ == "__main__":
