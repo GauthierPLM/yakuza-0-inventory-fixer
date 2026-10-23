@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove stuck Pocket Circuit parts from Yakuza 0 (PC/Steam) save files.
+"""Remove stuck Pocket Circuit parts from Yakuza 0 and Yakuza 0 Director's Cut (PC/Steam) saves.
 
 Some saves end up with Pocket Circuit car parts (tires, motors) occupying slots in
 Equipment > Weapon and in the weapon box. They can't be discarded in game. This script
@@ -18,13 +18,20 @@ Usage:
     python3 y0_fix_stuck_parts.py SaveData0002.sav
     python3 y0_fix_stuck_parts.py SaveData0002.sav --in-place   # overwrite, keeping a .bak
 
-Save location with Steam:
-    <Steam>/userdata/<steam id>/638970/remote/SaveData000N.sav
+Save locations:
+    Yakuza 0:
+        <Steam>/userdata/<steam id>/638970/remote/
+    Yakuza 0 Director's Cut:
+        %APPDATA%\\SEGA\\Yakuza0_DirectorsCut\\Steam\\<steam id>\\
+        (Proton: <Steam>/steamapps/compatdata/2988580/pfx/drive_c/users/steamuser/
+         AppData/Roaming/Sega/Yakuza0_DirectorsCut/Steam/<steam id>/)
 
 Credits: Yakuza 0 is (c) SEGA. The item IDs below come from the game's own item list
-(item.uni in media/data/bootpar/boot.par). This project is not affiliated with SEGA or
-RGG Studio. For the full item list (names, types, limits) and the save layout, see
-https://github.com/apocalyptech/y0-cli-save (y0/itemregistry.py, y0/savegame.py).
+(item.uni in media/data/bootpar/boot.par; identical in Director's Cut). This project is not
+affiliated with SEGA or RGG Studio. For the full item list (names, types, limits) and the save
+layout, see https://github.com/apocalyptech/y0-cli-save (y0/itemregistry.py, y0/savegame.py).
+The Director's Cut save format (original save body behind an enlarged header) is from
+https://github.com/kamikazziee/Yakuza0-DirectorsCutSaveConverter.
 """
 
 import argparse
@@ -34,14 +41,24 @@ import shutil
 import sys
 from pathlib import Path
 
+# Yakuza 0 saves start with "YZFH" and are 167720 bytes. Director's Cut saves start with
+# "YZF2": the same data, but with an extra DC_EXT_SIZE bytes inserted after the first
+# BASE_HEADER_SIZE bytes, so every inventory offset below moves by DC_EXT_SIZE.
 SAVE_SIZE = 167720
-MAGIC = b"YZFH"
+BASE_HEADER_SIZE = 0x38
+DC_EXT_SIZE = 0xC0
+FORMATS = {
+    b"YZFH": ("Yakuza 0", SAVE_SIZE, 0),
+    b"YZF2": ("Director's Cut", SAVE_SIZE + DC_EXT_SIZE, DC_EXT_SIZE),
+}
+# The game's item list has 1148 entries (IDs 0-1147); any larger ID means we are misreading.
+MAX_ITEM_ID = 1147
 
 # Save layout (see also github.com/apocalyptech/y0-cli-save, which documents it).
 # Items are 16-byte records; the first 2 bytes (little endian) are the item ID.
 RECORD_SIZE = 16
 
-# (label, offset, number of slots). Kiryu's own "Pocket Circuit" list at 0xD86C is where
+# (label, offset in a Yakuza 0 save, number of slots). Kiryu's own "Pocket Circuit" list at 0xD86C is where
 # these parts belong, so it is not scanned. Everything else must not contain any.
 INVENTORIES = [
     ("Kiryu item inventory", 0x7AAC, 20),
@@ -119,33 +136,42 @@ PARTS = {
 SAVE_PATTERNS = ("SaveData*.sav", "SaveData*.clr")
 
 
-def find_stuck(data, ids):
+def find_stuck(data, ids, shift):
+    """Return the stuck records, or None if the data doesn't look like the expected layout."""
     found = []
     for label, base, count in INVENTORIES:
         for index in range(count):
-            offset = base + index * RECORD_SIZE
+            offset = base + shift + index * RECORD_SIZE
             item_id = int.from_bytes(data[offset:offset + 2], "little")
+            if item_id > MAX_ITEM_ID:
+                return None
             if item_id in ids:
                 found.append((label, index, offset, item_id))
     return found
 
 
 def load_save(path):
-    """Return the save's bytes, or None (with a message) if it isn't a Yakuza 0 save."""
+    """Return (bytes, offset shift, game name), or None (with a message) if not a known save."""
     data = bytearray(path.read_bytes())
-    if data[:4] != MAGIC or len(data) != SAVE_SIZE:
-        print(f"{path}: not a Yakuza 0 save "
-              f"(expected magic {MAGIC!r} and {SAVE_SIZE} bytes, got {bytes(data[:4])!r} and {len(data)} bytes)")
+    fmt = FORMATS.get(bytes(data[:4]))
+    if fmt is None or len(data) != fmt[1]:
+        expected = ", ".join(f"{magic.decode()} with {size} bytes ({name})"
+                             for magic, (name, size, _) in FORMATS.items())
+        print(f"{path}: not a known Yakuza 0 save (expected {expected}; "
+              f"got {bytes(data[:4])!r} with {len(data)} bytes)")
         return None
-    return data
+    return data, fmt[2], fmt[0]
 
 
-def scan(path, data, ids):
-    found = find_stuck(data, ids)
+def scan(path, data, ids, shift, game):
+    found = find_stuck(data, ids, shift)
+    if found is None:
+        print(f"{path}: unrecognised {game} save layout (item IDs out of range), skipping")
+        return None
     if not found:
-        print(f"{path}: no stuck Pocket Circuit parts found")
+        print(f"{path}: no stuck Pocket Circuit parts found ({game})")
         return found
-    print(f"{path}: found {len(found)} stuck record(s)")
+    print(f"{path}: found {len(found)} stuck record(s) ({game})")
     for label, index, offset, item_id in found:
         print(f"  {label}, slot {index + 1:3d} at {offset:#x}: pokecir_{ids[item_id]} (id {item_id:#x})")
     return found
@@ -181,10 +207,11 @@ def fix_folder(folder, ids, dry_run, backup_dir):
 
     todo = []
     for path in paths:
-        data = load_save(path)
-        if data is None:
+        loaded = load_save(path)
+        if loaded is None:
             continue
-        found = scan(path, data, ids)
+        data, shift, game = loaded
+        found = scan(path, data, ids, shift, game)
         if found:
             todo.append((path, data, found))
 
@@ -214,10 +241,13 @@ def fix_folder(folder, ids, dry_run, backup_dir):
 
 
 def fix_file(path, ids, dry_run, in_place, output):
-    data = load_save(path)
-    if data is None:
+    loaded = load_save(path)
+    if loaded is None:
         sys.exit(1)
-    found = scan(path, data, ids)
+    data, shift, game = loaded
+    found = scan(path, data, ids, shift, game)
+    if found is None:
+        sys.exit(1)
     if not found or dry_run:
         return
     clear_records(data, found)
